@@ -1,0 +1,254 @@
+module routine_functions   'рутинные функции и процедуры
+
+sub procedure Word_Write (dim word_num as word, dim activeFont as ^far const byte, dim font_color as word, dim font_orientation as byte, dim x, y as word ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+sub procedure Float_Write (dim word_num as float, dim activeFont as ^far const byte, dim font_color as word, dim font_orientation as byte, dim x, y as word ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+sub procedure Word_Re_Write (dim word_num_old, word_num_new as word, dim activeFont as ^far const byte, dim back_color, font_color as word, dim font_orientation as byte, dim x, y as word ) '(цифра старая, цифра новая, шрифт, цвет фона, цвет шрифта, вертик/гориз, x, y)
+sub procedure Rectangle_noBrush (dim color as word, dim pen_width as byte, dim x_s, y_s, x_e, y_e as word)
+sub procedure H_line_gradient (dim y, pen, color_1, color_2 as word)   'горизонтальная линия с градиентом  - y на какой высоте, pen - толщина линии кратная 2
+sub procedure H2_line_gradient (dim y, pen, color_1, color_2 as word)  '2я горизонтальная линия с градиентом  - y на какой высоте, pen - толщина линии кратная 2
+sub procedure Battery_drow (dim x, y, pen, color as word)
+sub procedure Battery_Update (dim x, y, adc_ as word)  ' отрисовка заряда батареи x, y - батарейки,
+sub function Float_to_Text (dim float_num as float, dim point as byte) as string [20] ' преобразование float в text
+sub procedure Antenna_RX_Write (dim x, y, color as word)
+sub procedure Battery_Charge_red (dim x, y as word)  ' отрисовка подключенной зарядки от USB  x, y красная
+sub procedure Battery_Charge_black (dim x, y as word)  ' отрисовка подключенной зарядки от USB  x, y  черная
+sub procedure ADC1_2_init() ' активация ЦАП 1 и 2
+''============сенсорная кнопка ===============================
+'sub procedure Out_()
+'sub procedure Inp_()
+'sub function Count_()as word
+''============================================================
+
+dim txt_1, txt_2 as string[30]
+dim var_bit as bit
+dim var_byte as byte
+dim var_long_1 as longint
+dim var_long_2 as longint
+dim var_float_1 as float
+dim var_float_2 as float
+dim var_float_3 as float
+dim var_float_4 as float
+'dim var_word_1 as longword
+'dim var_word_2 as longword
+dim word_txt as string[5]
+
+dim res as longword
+implements
+
+
+'
+'
+''сенсорная кнопка===============================
+'  sub procedure Out_()
+'  GPIO_Config(@GPIOB_BASE, _GPIO_PINMASK_5, _GPIO_CFG_DIGITAL_OUTPUT)' DC Установка линии порта B5 на вывод
+'  GPIOB_ODR.B5 = 0
+'  end sub
+'
+'  sub procedure Inp_()
+'  RCC_APB2ENR.B3 = 1  'тактирование порта B
+'  GPIOB_CRL.B20 = 0   ' 00: Input mode для Port B5
+'  GPIOB_CRL.B21 = 0
+'
+'  GPIOB_CRL.B23 = 1   '10: Input with pull-up / pull-down для Port B5
+'  GPIOB_CRL.B22 = 0
+'
+'  GPIOB_BSRR.B5 = 1   'подтяжка к +
+'  end sub
+'
+'  sub function Count_()as word
+'  dim count1 as word
+'  count1 = 0
+'  while GPIOB_IDR.B5 = 0
+'  inc(count1)
+'  wend
+'  result = count1
+'  end sub
+' '============================================================
+'
+  ' настройка ADC1 и 2
+  sub procedure ADC1_2_init()
+    TFT_Set_Index_Ptr(0x28)'       // Выключение дисплея
+    TFT_Set_Index_Ptr(0x10)    ' sleep
+    delay_ms(100)
+    ADC_Set_Input_Channel(_ADC_CHANNEL_2)  ' Set ADC channel 2 as an analog input
+    ADC_Set_Input_Channel(_ADC_CHANNEL_1)
+    ADC1_Init()                            ' Initialize ADC module
+    TFT_Set_Index_Ptr(0x29)'       // Включение дисплея
+    TFT_Set_Index_Ptr(0x11)    ' sleep
+    delay_ms(100)
+  end sub
+
+  'записать цифру Word
+  sub procedure Word_Write (dim word_num as word, dim activeFont as ^far const byte, dim font_color as word, dim font_orientation as byte, dim x, y as word ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+    WordToStr(word_num, word_txt)
+    TFT_Set_Font(activeFont, font_color, font_orientation)
+    TFT_Write_Text(word_txt, x, y)
+  end sub
+
+  'перезаписать цифру Word
+  sub procedure Word_Re_Write (dim word_num_old, word_num_new as word, dim activeFont as ^far const byte, dim back_color, font_color as word, dim font_orientation as byte, dim x, y as word ) '(цифра старая, цифра новая, шрифт, цвет фона, цвет шрифта, вертик/гориз, x, y)
+    WordToStr(word_num_old, word_txt)
+    TFT_Set_Font(activeFont, back_color, font_orientation)
+    TFT_Write_Text(word_txt, x, y)
+    WordToStr(word_num_new, word_txt)
+    TFT_Set_Font(activeFont, font_color, font_orientation)
+    TFT_Write_Text(word_txt, x, y)
+  end sub
+  
+  'прямоугольник без заливки
+  sub procedure Rectangle_noBrush (dim color as word, dim pen_width as byte, dim x_s, y_s, x_e, y_e as word) ' незакрашенный прямоугольник. цвет, толщина линии, xy-верх.угол xy-низ.угол
+    TFT_Set_Brush(0, 0, 1, LEFT_TO_RIGHT, CL_BLACK, CL_WHITE)
+    TFT_Set_Pen(color, pen_width)
+    TFT_Rectangle(x_s, y_s, x_e, y_e)
+  end sub
+
+  'градиентная горизонтальная полоса (переход цвета по горизонтали)
+  sub procedure H_line_gradient (dim y, pen, color_1, color_2 as word)   'горизонтальная линия с градиентом от черного к белому - y на какой высоте, pen - толщина линии кратная 2
+    TFT_Set_Pen(CL_black, 0)
+    TFT_Set_Brush(1, 0, 1, LEFT_TO_RIGHT, color_1, color_2)
+    TFT_Rectangle(0, y, 99, y + pen)
+    TFT_Set_Brush(1, 0, 1, LEFT_TO_RIGHT, color_2, color_1)
+    TFT_Rectangle(219, y, 319, y + pen)
+    TFT_Set_Pen(color_2, pen)
+    TFT_H_Line(99, 219, y + (pen/2))  ' Y-s, Y-e, X
+  end sub
+
+  'градиентная горизонтальная полоса (переход цвета по вертикали)
+  sub procedure H2_line_gradient (dim y, pen, color_1, color_2 as word)   'горизонтальная линия с градиентом от черного к белому - y на какой высоте, pen - толщина линии кратная 2
+    TFT_Set_Pen(CL_black, 0)
+    TFT_Set_Brush(1, 0, 1, TOP_TO_BOTTOM, color_1, color_2)
+    TFT_Rectangle(0, y, 319, y + pen/2)
+    TFT_Set_Brush(1, 0, 1, TOP_TO_BOTTOM, color_2, color_1)
+    TFT_Rectangle(0, y+pen/2, 319, y + pen)
+  end sub
+  
+  'рисунок антенны (прием)
+  sub procedure Antenna_RX_Write (dim x, y, color as word)  ' рисунок антенны. контур белый, x, y, цвет внутренней точки ,
+    TFT_Set_Pen(CL_white, 1)
+    TFT_Set_Brush(1, color, 0, 0, 0, 0)
+    TFT_Circle(x, y, 2)
+    TFT_Set_Brush(0, 0, 1, LEFT_TO_RIGHT, CL_BLACK, CL_WHITE)
+    TFT_Circle(x, y, 8)
+    TFT_Circle(x, y, 5)
+    TFT_Set_Pen(CL_black, 3)
+    TFT_H_Line(x-5, x+5, y-7 )
+    TFT_H_Line(x-5, x+5, y+7 )
+    TFT_H_Line(x-2, x+2, y-5 )
+    TFT_H_Line(x-2, x+2, y+5 )
+  end sub
+
+  
+  'рисунок контура батарейки
+  sub procedure Battery_drow (dim x, y, pen, color as word)  ' рисунок контура батарейки x, y - крайняя левая верхняя точка, pen- толщина линии, цвет
+    Rectangle_noBrush(color, pen, x+3, y, x+25, y+10) ' незакрашенный прямоугольник. цвет, толщина линии, xy-верх.угол xy-низ.угол
+    Rectangle_noBrush(color, pen, x, y+3, x+3, y+7) ' незакрашенный прямоугольник. цвет, толщина линии, xy-верх.угол xy-низ.угол
+  end sub
+  
+  'отрисовка заряда батарейки
+  sub procedure Battery_Update (dim x, y, adc_ as word)  ' отрисовка заряда батареи x, y - батарейки, adc - значение от 0 до 6
+    adc_=adc_*3
+    TFT_Set_Pen(CL_black, 0)
+      if adc_=3 then
+         TFT_Set_Brush(1, 0, 1, TOP_TO_BOTTOM, CL_red, CL_red)
+         else
+         TFT_Set_Brush(1, 0, 1, TOP_TO_BOTTOM, CL_LIME, CL_Green)
+      end if
+         TFT_Rectangle(x+5, y+2, x+24, y+9)
+      if adc_< 18 then
+         TFT_Set_Brush(1, 0, 1, TOP_TO_BOTTOM, CL_Black, CL_gray)
+         TFT_Rectangle(x+5, y+2, x+24-adc_, y+9)
+         else
+      end if
+  end sub
+   
+  sub procedure Battery_Charge_red (dim x, y as word)  ' отрисовка подключенной зарядки от USB  x, y
+   TFT_Set_Pen(CL_red, 2)    ' выбрать цвет и толщину линии
+   TFT_Line(x, y, x-3, y+7)
+   TFT_Line(x, y+1, x-1, y+7)
+   TFT_Line(x+3, y+7, x, y+14)
+   TFT_Line(x+1, y+7, x, y+13)
+   'TFT_H_Line(x-3, x+3, y+7)
+   TFT_Dot(x, y-1, CL_red)
+   TFT_Dot(x-1, y+15, CL_red)
+  end sub
+  
+  sub procedure Battery_Charge_black (dim x, y as word)  ' отрисовка подключенной зарядки от USB  x, y
+   TFT_Set_Pen(CL_black, 2)    ' выбрать цвет и толщину линии
+   TFT_Line(x, y, x-3, y+7)
+   TFT_Line(x, y+1, x-1, y+7)
+   TFT_Line(x+3, y+7, x, y+14)
+   TFT_Line(x+1, y+7, x, y+13)
+   'TFT_H_Line(x-3, x+3, y+7)
+   TFT_Dot(x, y-1, CL_black)
+   TFT_Dot(x-1, y+15, CL_black)
+  end sub
+  
+
+
+
+ 'Перевод числа с запятой в текст - для отрисовки
+  sub function Float_to_Text (dim float_num as float, dim point as byte) as string [30] '(цифра, кол-во знаков после запятой)
+    if float_num < 0 then
+     var_bit = 0
+     float_num = fabs(float_num) 'если число отрицательное запомним это (var_bit) и поменяем знак на положительный
+      else
+     var_bit = 1
+    end if
+    var_float_1 = modf(float_num, var_float_2) ' разделим число на составные  var_float_1 - после запятой   var_float_2 - до запятой
+    var_byte = 0
+    if var_float_1 < 0.1 then var_byte = 1   ' если вторая часть начинается с нулей - запомним это
+     if var_float_1 < 0.01 then var_byte = 2
+       if var_float_1 < 0.001 then var_byte = 3
+'          if var_float_1 < 0.0001 then var_byte = 4
+'
+'          end if
+        end if
+      end if
+    end if
+    var_float_1 = var_float_1 * (pow(10,point))  ' умножим на кол-во знаков (нулей)
+    var_float_3 = modf(var_float_1, var_float_4)  ' еще раз разделим
+    if var_float_3 < 0.5 then
+     var_float_4 = var_float_4
+     else
+    var_float_4 = var_float_4+1
+    end if
+'    var_word_1 = var_float_2
+'    var_word_2 = var_float_4
+'    longwordToStr(var_word_1, txt_1)
+'    longwordToStr(var_word_2, txt_2)
+    
+    floatToStr(var_float_2, txt_1)
+    floatToStr(var_float_4, txt_2)
+    res = strchr(txt_1, ".")   ' найдем где точка
+    txt_1[res+1] = 0           ' обрежем все что после точки
+    res = strchr(txt_2, ".")   ' найдем где точка
+    txt_2[res] = 0           ' обрежем все что после точки
+'     if var_byte = 4 then result = txt_1 + "" + "0000" + txt_2
+       if var_byte = 3 then result = txt_1 + "" + "000" + txt_2
+         if var_byte = 2 then result = txt_1 + "" + "00" + txt_2
+          if var_byte = 1 then result = txt_1 + "" + "0" + txt_2
+            if var_byte = 0 then result = txt_1 + "" + txt_2
+            'result = txt_1 + "" + txt_2
+'            end if
+          end if
+         end if
+       end if
+     end if
+     
+     if var_bit = 1 then
+      result = result
+      else
+      result = "-" + result
+     end if
+  end sub
+  
+
+  
+  'Перевод числа с запятой в текст - (без удаления нулей и определения кол-ва знаков после запятой) - для отрисовки
+  sub procedure Float_Write (dim word_num as float, dim activeFont as ^far const byte, dim font_color as word, dim font_orientation as byte, dim x, y as word ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+    FloatToStr(word_num, word_txt)
+    TFT_Set_Font(activeFont, font_color, font_orientation)
+    TFT_Write_Text(word_txt, x, y)
+  end sub
+
+end.

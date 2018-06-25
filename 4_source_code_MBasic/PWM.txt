@@ -1,0 +1,21 @@
+module PWM
+dim ratio as longword
+
+implements
+
+sub procedure PWM_()
+ '======= Настройка и включение ШИМ для Port A8 ============================
+RCC_APB2ENR.B2 = 1  'тактирование порта А
+RCC_APB2ENR.B11 = 1  'тактирование TMR1
+GPIOA_CRH.B3 = 1   ' Настройка альтернативной функции на порт Alternate function output Push-pull для Port A8
+GPIOA_CRH.B2 = 0
+GPIOA_CRH.B1 = 1   ' выход Output mode, max speed 50 MHz. для Port A8
+GPIOA_CRH.B0 = 1
+
+
+ratio = PWM_TIM1_Init(26322)    '26140 = 32500
+PWM_TIM1_Start(_PWM_CHANNEL1, @_GPIO_MODULE_TIM1_CH1_PA8)
+PWM_TIM1_Set_Duty(ratio/2,_PWM_NON_INVERTED, _PWM_CHANNEL1)
+'==================================================================================
+end sub
+end.

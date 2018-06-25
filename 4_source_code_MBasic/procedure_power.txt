@@ -1,0 +1,8 @@
+module procedure_power
+
+
+implements
+
+
+
+end.

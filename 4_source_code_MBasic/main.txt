@@ -1,0 +1,2098 @@
+program main
+
+include common_procedure  ' отдельные, общие функции
+include procedure_power   ' переходы в сон
+include screen_elements   ' элементы экрана для отрисовки
+include encoder   ' подключение энкодера
+include CORE   ' подключить основной файл
+'include ADC   ' подключить основной файл
+include tft_lib   ' подключить библиотеку TFT
+include Ports   ' подключить определения портов для TFT и др
+include routine_functions 'функции и процедуры стандартно выполняемые
+'include si4721 'управление транссивером
+include EEPROM24LC512 'EEPROM
+include fonts
+
+' массив для хранения значений уровня сигнала станций
+dim RSSI_level as word[321]  '320
+dim RX_rssi_level as word
+' массив для хранения индекса частоты передачи
+dim TX as byte[321]  '320
+' массив для хранения значений настроек SETTING
+
+'переменные для основного цикла любого экрана (монитор энкодера)
+ dim var_cycle_1 as word       'значение переменной которое нужно мониторить и менять
+ dim var_cycle_2 as word       'временное значение
+ dim encod as word              'значение энкодера
+ dim encod_old as word          'старое значение энкодера
+' dim float_cycle_1 as float       'значение переменной которое нужно мониторить и менять
+' dim float_cycle_2 as float       'временное значение
+
+' Common
+dim but_count as word ' счетчик удержания кнопки
+dim time_count_1 as word ' счетчик удержания кнопки
+dim setting_menu_list_num as byte
+const rows as byte[16] = (0,31,46,61,76,91,106,121,136,151,166,181,196,225,225,225)
+
+
+
+dim RX_TX_status as byte ' переменная демонстрирующая что включено TX = 1 или RX = 0
+dim switcher_status as byte ' переменная демонстрирующая статус переключателя ON-1 OFF-0
+dim i as word
+
+dim tmp_byte_1 as byte
+dim tmp_byte_2 as byte
+dim tmp_byte_3 as byte
+dim tmp_word_1 as word
+dim tmp_word_2 as word
+dim tmp_word_3 as word
+'dim tmp_float_1 as float
+'dim tmp_float_2 as float
+'dim tmp_float_3 as float
+
+'include PWM 'ШИМ настройка
+
+'для eeprom
+ dim read_dat as byte
+
+
+' для АЦП
+dim adc_value as word
+dim ADC_result as float
+dim ADC_result_1 as float
+dim Float_text as string [30]
+
+'для отрисовки цифр настройки частоты
+dim txt_new as string [6]
+dim txt_old as string [6]
+dim txt as string [6]
+
+' переменные приемника
+dim RX_volume as word
+dim RX_friquency as word
+
+sub procedure oscillator_init()  ' настройка генератора
+  ' предочистка регистров тактирования
+  RCC_CR = 0
+  PLLSRC_bit = 0
+  PLLXTPRE_bit = 0
+  PLLMUL0_bit = 0
+  PLLMUL1_bit = 0
+  PLLMUL2_bit = 0
+  PLLMUL3_bit = 0
+  ' тактировать PLL от HSE (8 MHz)
+  PLLSRC_bit = 1 ' тактировать от PLL без предделителя
+  PLLMUL0_bit = 1 ' умножить на 9
+  PLLMUL1_bit = 1
+  PLLMUL2_bit = 1
+  PLLMUL3_bit = 0
+
+  CSSON_bit = 1 ' включить систему защиты от сбоем HSE
+
+  HSEON_bit = 1 ' включить HSE
+  while HSERDY_bit = 1 wend ' подождать пока включится HSE
+
+  PLLON_bit = 1 'запустить PLL
+  while PLLRDY_bit = 1 wend  'ждем пока включится PLL
+
+  SW0_bit = 0 ' очистим биты sw0, sw1
+  SW1_bit = 0
+  SW0_bit = 0 ' тактирование от PLL
+  SW1_bit = 1
+end sub
+
+sub procedure int_exti0() iv IVT_INT_EXTI0 ics ICS_AUTO ' обработка прерывания - выход из спячки - stop_mode
+        TFT_BLED = 0
+        EXTI_IMR.B0 = 0   'запрещаем прерывание по выбранной линии
+        EXTI_PR = %00000000000011111111111111111111
+        oscillator_init()
+        delay_ms(100)
+        TFT_Set_Index_Ptr(0x11) ' sleep OUT
+        delay_ms(100)
+        TFT_BLED = 1
+end sub
+
+sub procedure heder_clear()
+  TFT_Set_Pen(CL_black, 0)    ' выбрать цвет и толщину линии
+  TFT_Set_Brush(1,CL_black,0,0,0,0)
+  TFT_Rectangle(80,0,260,19)
+end sub
+
+sub procedure stop_mode()     '  уход в сон
+      RCC_APB2ENR.B2 = 1  'тактирование порта A
+   RCC_APB1ENR.B28 = 1  ' Power interface clock enable
+   PWR_CR.B2 = 1
+   PWR_CR.B3 = 1
+   PWR_CR.B1 = 0
+   PWR_CR.B0 = 1
+   NVIC_SCR.B2 =1
+''        'PWR_CSR.B8 = 1
+
+  RCC_APB2ENR.B0 = 1' разрешить альтернативную функцию для ввод
+  EXTI_RTSR.B0 = 1   'для детектирорвания одного фронта
+  EXTI_FTSR.B0 = 0 '0
+  EXTI_IMR.B0 = 1   'разрешаем прерывание по выбранной линии
+  NVIC_IntEnable(IVT_INT_EXTI0)
+
+  TFT_BLED = 0                    ' подсветка дисплея
+  TFT_Set_Index_Ptr(0x10) ' sleep IN
+
+     asm
+        WFE
+     end asm
+end sub
+
+sub procedure standby_mode()       ' уход в глубокий сон
+            TFT_BLED = 0                    ' подсветка дисплея
+            TFT_Fill_Screen(CL_black)
+            TFT_BLED = 1                    ' подсветка дисплея
+
+            TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+            TFT_Write_Text("standby mode", 120, 100)
+            TFT_Set_Pen(CL_silver, 2)    ' выбрать цвет и толщину линии
+            TFT_H_Line(60, 260, 120)       'горизонтальная линия
+            for i = 0 to 200
+              TFT_Set_Pen(CL_red, 2)    ' выбрать цвет и толщину линии
+              TFT_H_Line(60, i+60, 120)       'горизонтальная линия
+              delay_ms(10)
+            next i
+              delay_ms(3000)
+
+            TFT_BLED = 0                    ' подсветка дисплея
+            TFT_Set_Index_Ptr(0x10) ' sleep IN
+            TFT_Set_Index_Ptr(0x28) ' выключить дисплей
+
+            RCC_APB1ENR.B28 = 1
+            PWR_CR.B2 = 1
+            PWR_CR.B3 = 1
+            PWR_CR.B1 = 1
+            NVIC_SCR.B2 =1
+            PWR_CSR.B8 = 1
+                  asm
+                   WFE
+                  end asm
+end sub
+
+sub procedure battary_check()       '  проверка и отрисовка статуса батареи и зарядки
+          adc_value = ADC1_Get_Sample(1)    ' read analog value from ADC module channel 10
+                   if adc_value > 2000 then  ' если подключено внешнее питание отрисовать значек заряда
+                     Battery_Charge_red (275, 5)
+                     else
+                     Battery_Charge_black (275, 5)
+                   end if
+
+          TFT_BLED = 0               ' подсветка дисплея
+          adc_value = ADC1_Get_Sample(2)    ' read analog value from ADC module channel 10
+          TFT_BLED = 1                    ' подсветка дисплея
+          ADC_result = adc_value * 0.000798 * 1.99
+       tmp_byte_1 = 0
+       if ADC_result > 3.2 then
+         if ADC_result > 3.4 then tmp_byte_1 = 2
+           if ADC_result > 3.5 then tmp_byte_1 = 3
+             if ADC_result > 3.6 then tmp_byte_1 = 4
+               if ADC_result > 3.7 then tmp_byte_1 = 5
+                 if ADC_result > 3.8 then
+                   tmp_byte_1 = 6
+                 end if
+               end if
+             end if
+           end if
+         end if
+       end if
+   if tmp_byte_2 <> tmp_byte_1 then
+        Battery_Update(290, 5, tmp_byte_1)  ' отрисовка заряда батареи x, y - батарейки, adc - значение от 0 до 6
+        tmp_byte_2 = tmp_byte_1
+   end if
+end sub
+
+sub procedure encoder_init()    ' подключение и настройка энкодера
+          init_encoder()
+          set_encoder(4000, 1000)
+      delay_ms(100)
+      encod_old = encoder()
+end sub
+
+sub procedure Write_friq()
+                if  var_cycle_2 <>  var_cycle_1 then
+                  WordToStr(var_cycle_2, txt_old)
+                  txt = txt_old
+                  res = length(txt_old)  ' посчитать сколько знаков в txt_sub
+                  txt_old[res-1] = 0     ' отрезать один знак сзади
+                  memset(@txt, " ", res-1) ' заменить знаки на пробелы
+                  ltrim(txt) 'обрезать пробелы спереди
+                  txt_old = txt_old + "." + txt
+
+                  WordToStr(var_cycle_1, txt_new)
+                  txt = txt_new
+                  res = length(txt_new)  ' посчитать сколько знаков в txt_sub
+                  txt_new[res-1] = 0     ' отрезать один знак сзади
+                  memset(@txt, " ", res-1) ' заменить знаки на пробелы
+                  ltrim(txt) 'обрезать пробелы спереди
+                  txt_new = txt_new + "." + txt
+
+                  TFT_Set_Font(@BroadbandRegular28x27_Italic, CL_black, FO_HORIZONTAL)
+                  TFT_Write_Text(txt_old, 95, 122)
+                  TFT_Set_Font(@BroadbandRegular28x27_Italic, CL_silver, FO_HORIZONTAL)
+                  TFT_Write_Text(txt_new, 95, 122)
+               end if
+ end sub
+
+sub procedure Indicator_line (dim var_cycle_1, var_cycle_2 as word) '(отрисовать линию индикатора на шкале)
+     'dim TX_ind as byte
+   TFT_Set_Pen(CL_black, 1)    ' выбрать цвет и толщину линии
+     TFT_V_Line(22, 122, var_cycle_2-761)       'вертикальная линия
+   TFT_Set_Pen(CL_green, 1)    ' выбрать цвет и толщину линии
+   RX_rssi_level = RSSI_level[var_cycle_2 - 761]  ' прочитать из массива значение RSSI чтобы отрисовать после ухода линии индикатора
+     TFT_V_Line(119 - RX_rssi_level, 119, var_cycle_2-761)       'вертикальная линия
+    if 50-TX[var_cycle_2 - 761] < 50 then
+       TFT_Set_Pen(CL_yellow, 1)    ' выбрать цвет и толщину линии
+         TFT_V_Line(50-TX[var_cycle_2 - 761], 50, var_cycle_2 - 761)       'прочитать из массива значение частоты передатчика чтобы отрисовать после ухода линии индикатора
+    end if
+   TFT_dot(var_cycle_2-761,120,CL_silver)  ' точка - восстановление горизонтальной линии
+   TFT_Set_Pen(CL_red, 1)    ' выбрать цвет и толщину линии
+   TFT_V_Line(25, 122, var_cycle_1-761)       'вертикальная линия
+end sub
+
+sub procedure Switcher_Drow_ON (dim x, y ,switcher_color, ON_color, OFF_color as word, dim on_status as byte) ' отрисовывать переключатель x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса вулючения (0 1)
+   TFT_Set_Pen(ON_color, 1)    ' выбрать цвет и толщину линии
+   TFT_Set_Brush(1,ON_color,0,0,0,0)
+   TFT_Rectangle_Round_Edges(x,y, x+50, y+30, 15)
+   'TFT_Set_Pen(CL_black, 1)    ' выбрать цвет и толщину линии
+   TFT_Set_Brush(1,switcher_color,0,0,0,0)
+   TFT_Circle(x+35,y+15,14)
+   if on_status = 1 then
+     TFT_Set_Pen(CL_silver, 1)    ' выбрать цвет и толщину линии
+     TFT_V_Line(y+12, y+18, x+13)
+   end if
+   switcher_status  = 1 ' RX=0 TX=1
+   time_count_1 = 0 'обнулить счетчик нахождения в режиме настройки
+end sub
+
+sub procedure Switcher_Drow_OFF (dim x, y ,switcher_color, ON_color, OFF_color as word, dim on_status as byte) ' отрисовывать переключатель x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса вулючения (0 1)
+   TFT_Set_Pen(OFF_color, 1)    ' выбрать цвет и толщину линии
+   TFT_Set_Brush(1,OFF_color,0,0,0,0)
+   TFT_Rectangle_Round_Edges(x,y, x+50, y+30, 15)
+     'TFT_Set_Pen(CL_black, 1)    ' выбрать цвет и толщину линии
+     TFT_Set_Brush(1,switcher_color,0,0,0,0)
+   TFT_Circle(x+15,y+15,14)
+   if on_status = 1 then
+     TFT_Set_Pen(CL_silver, 1)    ' выбрать цвет и толщину линии
+     TFT_Set_Brush(1,OFF_color,0,0,0,0)
+     TFT_Circle(x+39,y+15,4)
+   end if
+   switcher_status = 0 ' RX=0 TX=1
+   time_count_1 = 0 'обнулить счетчик нахождения в режиме настройки
+end sub
+
+sub procedure Volume_percent()  'отрисовка цифры громкость в %
+  dim volume_new as float
+   volume_new = RX_volume
+   volume_new = 100/63*RX_volume
+  if volume_new < 2 then 
+    volume_new = 0 
+  end if
+  TFT_Set_Pen(CL_black, 0)    ' выбрать цвет и толщину линии
+  TFT_Set_Brush(1,CL_black,0,0,0,0)
+  TFT_Rectangle(270,180,305,195)
+
+  Word_txt_1 = Float_to_Text(volume_new,0)+" %"
+  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+  TFT_Write_Text(word_txt_1, 275, 181)
+end sub
+
+sub procedure Volume_line ()    ' отрисовывать линию громкости
+  RX_volume = var_cycle_1
+  TFT_Set_Pen(CL_red, 2)    ' выбрать цвет и толщину линии
+  TFT_H_Line(66, 66+(RX_volume*3), 188)       'горизонтальная линия
+  TFT_Set_Pen(CL_gray, 2)    ' выбрать цвет и толщину линии
+    TFT_H_Line(66+(RX_volume*3), 255, 188)    'горизонтальная линия
+  Volume_percent()  'отрисовка цифры громкость в %
+end sub
+
+sub procedure RX_volume_2() 'отрисовка значения громкости на экране и надписи VOLUME
+   encod_old = encod
+   var_cycle_1 = RX_volume          ' вставить текущее значение
+   Volume_line ()' отрисовать громкость
+   TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+   TFT_Write_Text("volume", 15, 181)
+end sub
+
+sub procedure RX_volume_1() 'отрисовка статуса volume сверху
+   heder_clear()
+   TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+   TFT_Write_Text("volume", 130, 5)
+end sub
+
+sub procedure RX_tune_1() ' отрисовка статуса TUNING сверху
+ heder_clear()
+ TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+ TFT_Write_Text("tuning", 130, 5)
+end sub
+
+sub procedure RX_tune_2() ' отрисовка цифры и указателя частоты настройки
+ var_cycle_1 = RX_friquency          ' вставить текущее значение
+ if var_cycle_1 = 761 then
+   var_cycle_2 = var_cycle_1 + 1
+   else
+   var_cycle_2 = var_cycle_1 - 1
+ end if
+ Write_friq() 'отрисовать частоту цифры
+ Indicator_line(var_cycle_1,var_cycle_2) 'отрисовать линию шкалы настройки
+end sub
+
+sub procedure Save_frequency_1() ' отрисовать статус Save_frequency сверху
+  heder_clear()
+  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+   TFT_Write_Text("save frequency", 120, 5)
+end sub
+
+sub procedure Setting_1() ' отрисовать статус Setting сверху
+   heder_clear()
+   TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+   TFT_Write_Text("settings", 120, 5)
+end sub
+
+sub procedure Common_list_1() ' отрисовать статус Common_list сверху
+ heder_clear()
+ TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+ TFT_Write_Text("common settings", 120, 5)
+end sub
+
+sub procedure RX_settings_1() ' отрисовать статус RX_settings сверху
+ heder_clear()
+ TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+ TFT_Write_Text("RX settings", 120, 5)
+end sub
+
+sub procedure TX_settings_1() ' отрисовать статус TX_settings сверху
+ heder_clear()
+ TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+ TFT_Write_Text("TX settings", 120, 5)
+end sub
+
+sub procedure Switcher_RX_TX_1() ' отрисовать статус Switcher_RX_TX сверху
+   heder_clear()
+   TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+   TFT_Write_Text("RX-TX switcher", 120, 5)
+end sub
+
+sub procedure Switcher_RX_TX(dim TX_status as byte ) 'отрисовать переключатель RX/TX  ON- TX_status = 1  OFF- TX_status = 0
+   TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+   if TX_status = 1 then
+      Switcher_Drow_ON (135,205, CL_black, CL_red, CL_green, 0) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+      TFT_Write_Text("TX", 140, 214) '+5 , +9
+      else
+      Switcher_Drow_OFF (135,205, CL_black, CL_red, CL_green, 0) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+      TFT_Write_Text("RX", 167, 214) '+32 , +9
+   end if
+end sub
+
+sub procedure Switcher_setting(dim setting_status as byte ) 'отрисовать переключатель setting  ON- status = 1  OFF- status = 0
+     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+     TFT_Write_Text("go to", 224, 208)
+     TFT_Write_Text("setting", 211, 221)
+     if setting_status = 1 then
+        Switcher_Drow_ON (260,205, CL_black, CL_red, CL_green, 1) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+        else
+        Switcher_Drow_OFF (260,205, CL_black, CL_red, CL_green, 1) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+     end if
+end sub
+
+sub procedure Switcher_save_freq(dim save_status as byte ) 'отрисовать переключатель setting  ON- status = 1  OFF- status = 0
+   TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+   TFT_Write_Text("save", 65, 208)
+   TFT_Write_Text("freq.", 65, 221)
+   if save_status = 1 then
+      Switcher_Drow_ON (10,205, CL_black, CL_red, CL_green, 1) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+      else
+      Switcher_Drow_OFF (10,205, CL_black, CL_red, CL_green, 1) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+   end if
+end sub
+
+sub procedure encoder_cycle ()  ' настройка энкодера для входа в цикл
+   encoder_init()
+   encod = encoder()     'прочитали значение энкодера (100)
+   encod_old = encod
+   time_count_1 = 0 'обнулить счетчик нахождения в режиме настройки
+end sub
+
+sub procedure check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+        if but_count = 150 then   'если кнопка нажата на долго переход в режим standby
+          but_count = 0
+          standby_mode()
+          'stop_mode()
+        end if
+end sub
+
+sub procedure indicaror_blink(dim indic as byte) 'моргнуть индикотором настройки частоты (0-при сохранении значения 4-просто шкалой)
+         TFT_Set_Pen(CL_yellow, 1)    ' выбрать цвет и толщину линии
+         TFT_V_Line(21+indic, 122, RX_friquency-761)       'вертикальная линия
+         delay_ms(300)
+         TFT_Set_Pen(CL_red, 1)    ' выбрать цвет и толщину линии
+         TFT_V_Line(25, 122, RX_friquency-761)       'вертикальная линия
+end sub
+
+
+sub procedure Setting_sreen_prepare()  ' очистить экран, отрисовать линии
+  TFT_Fill_Screen(CL_black)
+  TFT_Set_Pen(CL_silver, 1)    ' выбрать цвет и толщину линии
+  TFT_H_Line(0, 320, 20)       'горизонтальная линия
+  TFT_H_Line(0, 320, 220)       'горизонтальная линия
+  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+end sub
+
+sub procedure Setting_main_list(dim i as byte) ' список пунктов меню настроек   'номер страницы меню 1
+  select case i
+    case 1
+    TFT_Write_Text("Setting_main_list", 25, 31)
+    case 2
+    TFT_Write_Text("Setting_main_list", 25, 46)
+    case 3
+    TFT_Write_Text("Setting_main_list", 25, 61)
+    case 4
+    TFT_Write_Text("Setting_main_list", 25, 76)
+    case 5
+    TFT_Write_Text("Setting_main_list", 25, 91)
+    case 6
+    TFT_Write_Text("Setting_main_list", 25, 106)
+    case 7
+    TFT_Write_Text("Setting_main_list", 25, 121)
+    case 8
+    TFT_Write_Text("Setting_main_list", 25, 136)
+    case 9
+    TFT_Write_Text("Setting_main_list", 25, 151)
+    case 10
+    TFT_Write_Text("Setting_main_list", 25, 166)
+    case 11
+    TFT_Write_Text("EXIT", 150, 225)
+  end select
+
+end sub
+
+
+sub procedure Setting_Common_list(dim i as byte) ' список пунктов меню настроек  'номер страницы меню 2
+  select case i
+    case 1
+    TFT_Write_Text("Setting_Common_list", 25, 31)
+    case 2
+    TFT_Write_Text("Setting_Common_list", 25, 46)
+    case 3
+    TFT_Write_Text("Setting_Common_list", 25, 61)
+    case 4
+    TFT_Write_Text("Setting_Common_list", 25, 76)
+    case 5
+    TFT_Write_Text("Setting_Common_list", 25, 91)
+    case 6
+    TFT_Write_Text("Setting_Common_list", 25, 106)
+    case 7
+    TFT_Write_Text("Setting_Common_list", 25, 121)
+    case 8
+    TFT_Write_Text("Setting_Common_list", 25, 136)
+    case 9
+    TFT_Write_Text("Setting_Common_list", 25, 151)
+    case 10
+    TFT_Write_Text("Setting_Common_list", 25, 166)
+    case 11
+    TFT_Write_Text("Setting_Common_list", 25, 181)
+    case 12
+    TFT_Write_Text("Setting_Common_list", 25, 196)
+    case 13
+    TFT_Write_Text("EXIT", 150, 225)
+  end select
+end sub
+dim Setting_common_list_data as byte[12]
+
+sub procedure Setting_TX_list_1(dim i as byte) ' список пунктов меню настроек  'номер страницы меню 3
+  select case i
+    case 1
+    TFT_Write_Text("Setting_TX_list_1", 25, 31)
+    case 2
+    TFT_Write_Text("Setting_TX_list_1", 25, 46)
+    case 3
+    TFT_Write_Text("Setting_TX_list_1", 25, 61)
+    case 4
+    TFT_Write_Text("Setting_TX_list_1", 25, 76)
+    case 5
+    TFT_Write_Text("Setting_TX_list_1", 25, 91)
+    case 6
+    TFT_Write_Text("Setting_TX_list_1", 25, 106)
+    case 7
+    TFT_Write_Text("Setting_TX_list_1", 25, 121)
+    case 8
+    TFT_Write_Text("Setting_TX_list_1", 25, 136)
+    case 9
+    TFT_Write_Text("Setting_TX_list_1", 25, 151)
+    case 10
+    TFT_Write_Text("Setting_TX_list_1", 25, 166)
+    case 11
+    TFT_Write_Text("Setting_TX_list_1", 25, 181)
+    case 12
+    TFT_Write_Text("Setting_TX_list_1", 25, 196)
+    case 13
+    TFT_Write_Text("EXIT", 150, 225)
+    case 14
+    TFT_Write_Text("NEXT >>", 255, 225)
+  end select
+
+end sub
+dim Setting_TX_list_1_data as byte[12]
+
+sub procedure Setting_TX_list_2(dim i as byte) ' список пунктов меню настроек 'номер страницы меню 4
+  select case i
+    case 1
+    TFT_Write_Text("Setting_TX_list_2", 25, 31)
+    case 2
+    TFT_Write_Text("Setting_TX_list_2", 25, 46)
+    case 3
+    TFT_Write_Text("Setting_TX_list_2", 25, 61)
+    case 4
+    TFT_Write_Text("Setting_TX_list_2", 25, 76)
+    case 5
+    TFT_Write_Text("Setting_TX_list_2", 25, 91)
+    case 6
+    TFT_Write_Text("Setting_TX_list_2", 25, 106)
+    case 7
+    TFT_Write_Text("Setting_TX_list_2", 25, 121)
+    case 8
+    TFT_Write_Text("Setting_TX_list_2", 25, 136)
+    case 9
+    TFT_Write_Text("Setting_TX_list_2", 25, 151)
+    case 10
+    TFT_Write_Text("Setting_TX_list_2", 25, 166)
+    case 11
+    TFT_Write_Text("Setting_TX_list_2", 25, 181)
+    case 12
+    TFT_Write_Text("Setting_TX_list_2", 25, 196)
+    case 13
+    TFT_Write_Text("<< back", 25, 225)
+    case 14
+    TFT_Write_Text("EXIT", 150, 225)
+    case 15
+    TFT_Write_Text("NEXT >>", 255, 225)
+  end select
+
+end sub
+dim Setting_TX_list_2_data as byte[12]
+
+sub procedure Setting_TX_list_3(dim i as byte) ' список пунктов меню настроек  'номер страницы меню 5
+  select case i
+    case 1
+    TFT_Write_Text("Setting_TX_list_3", 25, 31)
+    case 2
+    TFT_Write_Text("Setting_TX_list_3", 25, 46)
+    case 3
+    TFT_Write_Text("Setting_TX_list_3", 25, 61)
+    case 4
+    TFT_Write_Text("Setting_TX_list_3", 25, 76)
+    case 5
+    TFT_Write_Text("Setting_TX_list_3", 25, 91)
+    case 6
+    TFT_Write_Text("Setting_TX_list_3", 25, 106)
+    case 7
+    TFT_Write_Text("Setting_TX_list_3", 25, 121)
+    case 8
+    TFT_Write_Text("Setting_TX_list_3", 25, 136)
+    case 9
+    TFT_Write_Text("Setting_TX_list_3", 25, 151)
+    case 10
+    TFT_Write_Text("Setting_TX_list_3", 25, 166)
+    case 11
+    TFT_Write_Text("Setting_TX_list_3", 25, 181)
+    case 12
+    TFT_Write_Text("Setting_TX_list_3", 25, 196)
+    case 13
+    TFT_Write_Text("<< back", 25, 225)
+    case 14
+    TFT_Write_Text("EXIT", 150, 225)
+  end select
+
+end sub
+dim Setting_TX_list_3_data as byte[12]
+
+sub procedure Setting_RX_list_1(dim i as byte) ' список пунктов меню настроек  'номер страницы меню 6
+  select case i
+    case 1
+    TFT_Write_Text("Setting_RX_list_1", 25, 31)
+    case 2
+    TFT_Write_Text("Setting_RX_list_1", 25, 46)
+    case 3
+    TFT_Write_Text("Setting_RX_list_1", 25, 61)
+    case 4
+    TFT_Write_Text("Setting_RX_list_1", 25, 76)
+    case 5
+    TFT_Write_Text("Setting_RX_list_1", 25, 91)
+    case 6
+    TFT_Write_Text("Setting_RX_list_1", 25, 106)
+    case 7
+    TFT_Write_Text("Setting_RX_list_1", 25, 121)
+    case 8
+    TFT_Write_Text("Setting_RX_list_1", 25, 136)
+    case 9
+    TFT_Write_Text("Setting_RX_list_1", 25, 151)
+    case 10
+    TFT_Write_Text("Setting_RX_list_1", 25, 166)
+    case 11
+    TFT_Write_Text("Setting_RX_list_1", 25, 181)
+    case 12
+    TFT_Write_Text("Setting_RX_list_1", 25, 196)
+    case 13
+    TFT_Write_Text("EXIT", 150, 225)
+    case 14
+    TFT_Write_Text("NEXT >>", 255, 225)
+  end select
+
+end sub
+dim Setting_RX_list_1_data as byte[12]
+
+sub procedure Setting_RX_list_2(dim i as byte) ' список пунктов меню настроек   'номер страницы меню 7
+  select case i
+    case 1
+    TFT_Write_Text("Setting_RX_list_2", 25, 31)
+    case 2
+    TFT_Write_Text("Setting_RX_list_2", 25, 46)
+    case 3
+    TFT_Write_Text("Setting_RX_list_2", 25, 61)
+    case 4
+    TFT_Write_Text("Setting_RX_list_2", 25, 76)
+    case 5
+    TFT_Write_Text("Setting_RX_list_2", 25, 91)
+    case 6
+    TFT_Write_Text("Setting_RX_list_2", 25, 106)
+    case 7
+    TFT_Write_Text("Setting_RX_list_2", 25, 121)
+    case 8
+    TFT_Write_Text("Setting_RX_list_2", 25, 136)
+    case 9
+    TFT_Write_Text("Setting_RX_list_2", 25, 151)
+    case 10
+    TFT_Write_Text("Setting_RX_list_2", 25, 166)
+    case 11
+    TFT_Write_Text("Setting_RX_list_2", 25, 181)
+    case 12
+    TFT_Write_Text("Setting_RX_list_2", 25, 196)
+    case 13
+    TFT_Write_Text("<< back", 25, 225)
+    case 14
+    TFT_Write_Text("EXIT", 150, 225)
+    case 15
+    TFT_Write_Text("NEXT >>", 255, 225)
+  end select
+end sub
+dim Setting_RX_list_2_data as byte[12]
+
+sub procedure Setting_RX_list_3(dim i as byte) ' список пунктов меню настроек   'номер страницы меню 8
+  select case i
+    case 1
+    TFT_Write_Text("Setting_RX_list_3", 25, 31)
+    case 2
+    TFT_Write_Text("Setting_RX_list_3", 25, 46)
+    case 3
+    TFT_Write_Text("Setting_RX_list_3", 25, 61)
+    case 4
+    TFT_Write_Text("Setting_RX_list_3", 25, 76)
+    case 5
+    TFT_Write_Text("Setting_RX_list_3", 25, 91)
+    case 6
+    TFT_Write_Text("Setting_RX_list_3", 25, 106)
+    case 7
+    TFT_Write_Text("Setting_RX_list_3", 25, 121)
+    case 8
+    TFT_Write_Text("Setting_RX_list_3", 25, 136)
+    case 9
+    TFT_Write_Text("Setting_RX_list_3", 25, 151)
+    case 10
+    TFT_Write_Text("Setting_RX_list_3", 25, 166)
+    case 11
+    TFT_Write_Text("Setting_RX_list_3", 25, 181)
+    case 12
+    TFT_Write_Text("Setting_RX_list_3", 25, 196)
+    case 13
+    TFT_Write_Text("<< back", 25, 225)
+    case 14
+    TFT_Write_Text("EXIT", 150, 225)
+  end select
+
+end sub
+dim Setting_RX_list_3_data as byte[12]
+
+sub procedure Setting_menu_yellow_draw(dim line_number as byte) ' выбрать список меню и подсветить желтым
+  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+  select case line_number
+    case 1
+    Setting_main_list(var_cycle_2)
+    case 2
+    Setting_Common_list(var_cycle_2)
+    case 3
+    Setting_TX_list_1(var_cycle_2)
+    case 4
+    Setting_TX_list_2(var_cycle_2)
+    case 5
+    Setting_TX_list_3(var_cycle_2)
+    case 6
+    Setting_RX_list_1(var_cycle_2)
+    case 7
+    Setting_RX_list_2(var_cycle_2)
+    case 8
+    Setting_RX_list_3(var_cycle_2)
+  end select
+
+  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+  select case line_number
+    case 1
+    Setting_main_list(var_cycle_1)
+    case 2
+    Setting_Common_list(var_cycle_1)
+    case 3
+    Setting_TX_list_1(var_cycle_1)
+    case 4
+    Setting_TX_list_2(var_cycle_1)
+    case 5
+    Setting_TX_list_3(var_cycle_1)
+    case 6
+    Setting_RX_list_1(var_cycle_1)
+    case 7
+    Setting_RX_list_2(var_cycle_1)
+    case 8
+    Setting_RX_list_3(var_cycle_1)
+  end select
+
+end sub
+
+sub procedure Setting_menu_cucle_button_and_encoder(dim max, min as byte)  'цикл меню настройки для любого экрана  (значения максимума и минимума счета энкодера
+  while TRUE
+      but_count = button_()
+      check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+
+      if but_count > 0 then
+        exit
+      end if
+
+      encod = encoder() ' проверить не поворачивался ли энкодер
+
+      if  encod > encod_old then
+       var_cycle_2 = var_cycle_1
+       var_cycle_1 = check_over_plus(var_cycle_1, max)
+        Setting_menu_yellow_draw(setting_menu_list_num) ' выбрать список меню и подсветить желтым setting_menu_list_num = это номер страницы меню
+      end if
+      if encod < encod_old then
+       var_cycle_2 = var_cycle_1
+       var_cycle_1 = check_over_minus(var_cycle_1, min)
+        Setting_menu_yellow_draw(setting_menu_list_num) ' выбрать список меню и подсветить желтым setting_menu_list_num = это номер страницы меню
+      end if
+    encod_old = encod
+  wend
+end sub
+
+sub procedure var_preparation ()  ' процедура выравнивания переменных перед входом в цикл
+   var_cycle_1 = tmp_byte_1   ' присвоили текущее значение переменной энкодера
+   var_cycle_2 = var_cycle_1  ' уровняли значения прошлое и текущее
+end sub
+
+sub function Setting_parametr_select(dim list_num, paremetr_num as byte)as byte
+ select case list_num
+  case 2
+  result = Setting_common_list_data[paremetr_num]
+  case 3
+  result = Setting_TX_list_1_data[paremetr_num]
+  case 4
+  result = Setting_TX_list_2_data[paremetr_num]
+  case 5
+  result = Setting_TX_list_3_data[paremetr_num]
+  case 6
+  result = Setting_RX_list_1_data[paremetr_num]
+  case 7
+  result = Setting_RX_list_1_data[paremetr_num]
+  case 8
+  result = Setting_RX_list_1_data[paremetr_num]
+ end select
+end sub
+
+sub procedure Setting_parametr_wrate(dim list_num, paremetr_num, parametr_value as byte)
+ select case list_num
+  case 2
+  Setting_common_list_data[paremetr_num]= parametr_value
+  case 3
+  Setting_TX_list_1_data[paremetr_num]= parametr_value
+  case 4
+  Setting_TX_list_2_data[paremetr_num]= parametr_value
+  case 5
+  Setting_TX_list_3_data[paremetr_num]= parametr_value
+  case 6
+  Setting_RX_list_1_data[paremetr_num]= parametr_value
+  case 7
+  Setting_RX_list_1_data[paremetr_num]= parametr_value
+  case 8
+  Setting_RX_list_1_data[paremetr_num]= parametr_value
+ end select
+end sub
+
+
+
+main:
+  oscillator_init()   ' инициализация тактового генератора
+  TFT_Activate()     ' включение дисплея
+  ADC1_2_init() ' активация ЦАП 1 и 2
+  TFT_Fill_Screen(CL_black)
+
+'===== начальные данные после перезагрузки ======================================================
+  RX_friquency = 765
+  RX_volume = 10
+  RX_TX_status = 0 ' RX=0 TX=1
+  time_count_1 = 0 'обнулить счетчик нахождения в режиме настройки
+
+ '====== верхний бар ==============================================================================
+scr_heder:
+  TFT_Set_Pen(CL_silver, 1)    ' выбрать цвет и толщину линии
+  TFT_H_Line(0, 320, 20)       'горизонтальная линия
+  Battery_drow(290, 5, 1, CL_silver)  ' рисунок контура батарейки
+   battary_check() 'отрисовать заряд батарейки
+
+ goto setting
+ 
+ ''+++++ меню  SETTING ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Setting:   '
+  TFT_BLED = 1                    ' подсветка дисплея
+  i = 1
+  while i < 13
+   Setting_common_list_data [i] = i+6
+   Setting_TX_list_1_data [i] = i+8
+   Setting_TX_list_2_data [i] = i+12
+   Setting_TX_list_3_data [i] = i+14
+   Setting_RX_list_1_data [i] = i+16
+   Setting_RX_list_2_data [i] = i+18
+   Setting_RX_list_3_data [i] = i+19
+   inc(i)
+  wend
+
+
+Setting_main_menu:
+   Setting_sreen_prepare()  ' очистить экран, отрисовать линии
+   i = 1
+   while i < 12
+    Setting_main_list(i) ' отрисовать список пунктов меню настроек  i - номер из списка
+    inc(i)
+   wend
+   
+   tmp_byte_1 = 1 ' присвоить значение 1 - как номер первого подсвечивающегося пункта меню
+   
+   encoder_cycle ()  ' настройка энкодера для входа в цикл
+   setting_menu_list_num = 1 'номер страницы меню 1 - Setting_main_list
+   var_preparation ()  ' процедура выравнивания переменных перед входом в цикл
+   Setting_menu_yellow_draw(setting_menu_list_num) ' выбрать список меню и подсветить желтым setting_menu_list_num = это номер страницы меню
+   Setting_menu_cucle_button_and_encoder(11, 1)  'цикл меню настройки для любого экрана  (значения максимума и минимума счета энкодера
+   tmp_byte_1 = var_cycle_1
+   select case tmp_byte_1        ' выбрать что делать при нажатии кнопки
+     case 1
+     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_red, FO_HORIZONTAL)
+     TFT_Write_Text("exit_1", 2, 2)
+     case 2
+     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_red, FO_HORIZONTAL)
+     TFT_Write_Text("exit_2", 2, 2)
+     case 3
+     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_red, FO_HORIZONTAL)
+     TFT_Write_Text("exit_3", 2, 2)
+     case 4
+     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_red, FO_HORIZONTAL)
+     TFT_Write_Text("exit_4", 2, 2)
+     goto Setting_Common_list
+   end select
+
+
+Setting_Common_list:
+   Setting_sreen_prepare()  ' очистить экран, отрисовать линии, настроить шрифт и цвет
+   i = 1
+   while i < 14           ' отрисовать список пунктов меню настроек  i - номер из списка и значения параметров
+    Setting_Common_list(i) ' список пунктов меню
+    inc(i)
+   wend
+   i = 1
+   while i < 13           ' отрисовать список значений
+    Byte_Write_short (Setting_common_list_data[i], 280, rows[i])
+    inc(i)
+   wend
+
+   tmp_byte_1 = 1 ' присвоить значение 1 - как номер первого подсвечивающегося пункта меню при входе в список
+Setting_Common_list_1:
+   encoder_cycle ()  ' настройка энкодера для входа в цикл
+   setting_menu_list_num = 2 'номер страницы меню
+   var_preparation ()  ' процедура выравнивания переменных перед входом в цикл
+   Setting_menu_yellow_draw(setting_menu_list_num) ' выбрать список меню и подсветить желтым setting_menu_list_num = это номер страницы меню
+   Setting_menu_cucle_button_and_encoder(13, 1)  'цикл меню настройки для любого экрана  (значения максимума и минимума счета энкодера и проверка кнопки
+   tmp_byte_1 = var_cycle_1
+   select case tmp_byte_1        ' выбрать что делать при нажатии кнопки
+     case 1,2,3,4,5,6,7,8,9,10,11,12
+     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+     Byte_Write_short (Setting_common_list_data[tmp_byte_1], 280, rows[tmp_byte_1])
+     TFT_Write_Text("rec", 2, 280)
+     case 13
+     goto Setting_main_menu
+   end select
+
+parametr_:
+    encoder_cycle ()  ' настройка энкодера для входа в цикл
+    var_preparation ()  ' процедура выравнивания переменных перед входом в цикл
+    var_cycle_1 = Setting_parametr_select(setting_menu_list_num, tmp_byte_1)
+  while TRUE
+      but_count = button_()
+      check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+
+      if but_count > 0 then
+         goto Setting_Common_list_1
+        'exit
+      end if
+
+      encod = encoder() ' проверить не поворачивался ли энкодер
+
+      if  encod > encod_old then
+       var_cycle_1 = check_over_plus(var_cycle_1, 30)
+       TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_black, FO_HORIZONTAL)
+       Byte_Write_short (var_cycle_2, 280, rows[tmp_byte_1])
+       TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+       Byte_Write_short (var_cycle_1, 280, rows[tmp_byte_1])
+       var_cycle_2 = var_cycle_1
+
+      end if
+      if encod < encod_old then
+       var_cycle_1 = check_over_minus(var_cycle_1, 0)
+       TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_black, FO_HORIZONTAL)
+       Byte_Write_short (var_cycle_2, 280, rows[tmp_byte_1])
+       TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+       Byte_Write_short (var_cycle_1, 280, rows[tmp_byte_1])
+       var_cycle_2 = var_cycle_1
+      end if
+    encod_old = encod
+  wend
+    
+    
+    
+'
+'
+'  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_red, FO_HORIZONTAL)
+'  TFT_Write_Text("exit", 2, 2)
+
+ temp_2:
+ goto temp_2
+
+
+
+
+
+'     tmp_byte_1 = 1
+'
+'Setting_Common_List_2:
+'     encoder_cycle ()  ' настройка энкодера для входа в цикл
+'     var_cycle_1 = tmp_byte_1   ' присвоили текущее значение переменной энкодера
+'     var_cycle_2 = var_cycle_1  ' уровняли значения прошлое и текущее
+'     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+'     Setting_Common_list_1(var_cycle_1) ' отрисовали желтым текущий пункт списка
+'                            ' ушли ждать нажатие на кнопку
+'
+'    while TRUE
+'      but_count = button_()
+'      check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+'
+'      if but_count > 0 then
+'        tmp_byte_1 = var_cycle_1
+'        goto Change_setting
+'      end if
+'
+'      encod = encoder() ' проверить не поворачивался ли энкодер
+'
+'      if  encod > encod_old then
+'       var_cycle_2 = var_cycle_1
+'       var_cycle_1 = check_over_plus(var_cycle_1, 15)
+'        TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+'        Setting_Common_list_1(var_cycle_2) ' отрисовать список пунктов меню настроек  i - номер из списка
+'        TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+'      if encod < encod_old then
+'       var_cycle_2 = var_cycle_1
+'       var_cycle_1 = check_over_minus(var_cycle_1, 1)
+'        TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+'        Setting_Common_list_1(var_cycle_2) ' отрисовать список пунктов меню настроек  i - номер из списка
+'        TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+'        Setting_Common_list_1(var_cycle_1) ' отрисовать список пунктов меню настроек  i - номер из списка
+'      end if
+'    encod_old = encod
+'  wend
+
+
+
+
+
+
+
+'  i = 1
+'  while i < 13
+'   Byte_Write(i, @Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL, 4, i*15+16 ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+'   inc(i)
+'  wend
+'
+'  i = 1
+'  while i < 13
+'   Byte_Write(Setting_common_1 [i], @Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL, 260, i*15+16 ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+'   inc(i)
+'  wend
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+'===== экран приемника ===========================================================================
+RX_sreen:
+  TFT_BLED = 0                    ' подсветка дисплея
+  TFT_Set_Pen(CL_silver, 1)    ' выбрать цвет и толщину линии
+  TFT_H_Line(0, 320, 120)       'горизонтальная линия
+  TFT_H_Line(0, 320, 150)       'горизонтальная линия
+  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+  TFT_Write_Text("76 MHz", 2, 125)
+  TFT_Write_Text("108 MHz", 280, 125)
+  Antenna_RX_Write (10, 10, CL_green)  ' рисунок антенны. контур белый, x, y, цвет внутренней точки ,
+
+   'заполнить массив информацией (во время сканирования эфира)
+   for i = 0 to 320
+     RSSI_level[i] = 64 ' значение RSSI
+   next i
+
+  'отрисовать на экране весь эфир RSSI
+   TFT_Set_Pen(CL_green, 1)    ' выбрать цвет и толщину линии
+  for i = 0 to 320
+   RX_rssi_level = RSSI_level[i]
+   TFT_V_Line(119 - RX_rssi_level, 119, i)       'вертикальная линия
+  next i
+
+   'заполнить массив информацией (частоты передачи)
+   for i = 0 to 320
+     TX[i] = 29 ' длина линии для отрисовки частоты передатчика
+   next i
+'    TX[10] = 29 ' длина линии для отрисовки частоты передатчика
+    TX[35] = 29 ' длина линии для отрисовки частоты передатчика
+ 
+'отрисовать на экране частоты передатчика
+ TFT_Set_Pen(CL_yellow, 1)    ' выбрать цвет и толщину линии
+  for i = 0 to 320
+   'TX[i]
+   if 50-TX[i] < 50 then
+    TFT_V_Line(50-TX[i], 50, i)       'вертикальная линия
+   end if
+  next i
+
+  RX_tune_2() ' отрисовка цифры и указателя частоты настройки
+   Switcher_RX_TX(RX_TX_status) 'отрисовать переключатель RX/TX  ON- TX_status = 1  OFF- TX_status = 0
+  Switcher_setting(0) ' отрисовать переключатель входа в настройки
+  Switcher_save_freq(0) ' отрисовать переключатель сохранения частоты
+
+
+  TFT_Set_Pen(CL_gray, 1)    ' выбрать цвет и толщину линии
+  TFT_Set_Brush(1,CL_black,0,0,0,0)
+  TFT_Rectangle_Round_Edges(10,150, 60, 150+20, 10)  '310
+  TFT_Rectangle_Round_Edges(10,177, 60, 177+20, 10)
+  TFT_Rectangle_Round_Edges(260,150, 310, 150+20, 10)
+  TFT_Rectangle_Round_Edges(260,177, 310, 177+20, 10)
+  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+  TFT_Write_Text("RDS", 26, 154)
+  TFT_Write_Text("STEREO", 265, 154)
+  'TFT_Write_Text("MAX", 275, 181)
+
+  TFT_Write_Text("radio UNISTAR FM", 100, 154)
+
+  RX_volume_1() 'отрисовка статуса volume
+  RX_volume_2() 'отрисовка значения громкости на экране и надписи VOLUME
+
+
+  TFT_BLED = 1                    ' подсветка дисплея
+
+
+'+++++ раздел громкость ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+RX_volume_cycle:
+   RX_volume_1() 'отрисовка статуса volume
+   delay_ms(200)
+ RX_volume_cycle_0:
+ ' настройка энкодера
+   encoder_cycle ()  ' настройка энкодера для входа в цикл
+   RX_volume_2() 'отрисовка значения громкости на экране и надписи VOLUME
+ RX_volume_cycle_1:
+   while TRUE    ' цикл в режиме VOLUME
+
+       battary_check() 'проверить, отрисовать батарейку
+
+     but_count = button_()
+     check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+
+        if but_count > 0 then
+          but_count = 0
+          goto RX_tune_cycle
+        end if
+
+       encod = encoder() ' проверить не поворачивался ли энкодер
+
+       if encod > encod_old then
+         var_cycle_2 = var_cycle_1
+         var_cycle_1 = check_over_plus(var_cycle_1, 63)
+         Volume_line ()' отрисовать громкость
+       end if
+       if encod < encod_old then
+         var_cycle_2 = var_cycle_1
+         var_cycle_1 = check_over_minus(var_cycle_1, 1)
+         Volume_line ()' отрисовать громкость
+       end if
+      encod_old = encod
+   wend
+
+'++++++ раздел настройка частоты ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+RX_tune_cycle:
+     RX_tune_1() ' отрисовка статуса TUNING
+     delay_ms(200)
+  RX_main_cycle_0:
+    ' настройка энкодера
+     encoder_cycle ()  ' настройка энкодера для входа в цикл
+     RX_tune_2() ' отрисовка цифры и указателя частоты настройки
+     indicaror_blink(4) 'моргнуть индикотором настройки частоты (0-при сохранении значения 4-просто шкалой)
+RX_main_cycle_1:
+    while TRUE
+       if time_count_1 > 3000 then
+         goto RX_volume_cycle
+         else
+         inc(time_count_1) ' таймер нахождения в режиме настройки частоты
+       end if
+
+      but_count = button_()
+      check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+      if but_count > 0 then
+        but_count = 0
+        goto Save_frequency
+      end if
+
+      but_count = 0
+
+      encod = encoder() ' проверить не поворачивался ли энкодер
+
+      if  encod > encod_old then
+       var_cycle_2 = var_cycle_1
+       var_cycle_1 = check_over_plus(var_cycle_1, 1080)
+       RX_friquency = var_cycle_1
+       Write_friq() 'отрисовать частоту цифры
+       Indicator_line(var_cycle_1,var_cycle_2) 'отрисовать линию шкалы настройки
+       time_count_1 = 0 'обнулить счетчик нахождения в режиме настройки
+      end if
+      if encod < encod_old then
+       var_cycle_2 = var_cycle_1
+       var_cycle_1 = check_over_minus(var_cycle_1, 761)
+       RX_friquency = var_cycle_1
+       Write_friq() 'отрисовать частоту цифры
+       Indicator_line(var_cycle_1,var_cycle_2) 'отрисовать линию шкалы настройки
+       time_count_1 = 0 'обнулить счетчик нахождения в режиме настройки
+      end if
+    encod_old = encod
+  wend
+'+++++ раздел сохранение частоты ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Save_frequency:
+  Save_frequency_1()
+  delay_ms(200)
+Save_frequency_0:
+    encoder_cycle ()  ' настройка энкодера для входа в цикл
+Save_frequency_cycle:
+  while TRUE
+         if time_count_1 > 3000 then
+           goto RX_volume_cycle
+         end if
+
+        but_count = button_()
+        check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+
+        if but_count > 0 then
+          but_count = 0
+          goto RX_TX_switcher_cycle
+        end if
+
+        but_count = 0
+
+        encod = encoder()     'прочитали значение энкодера (100)
+
+        if encod > encod_old then
+             Switcher_save_freq(1) 'отрисовать переключатель setting  ON- status = 1  OFF- status = 0
+
+             TX[RX_friquency-761] = 29 ' сохранить значение частоты передачи в массиве
+             indicaror_blink(0) 'моргнуть индикотором настройки частоты (0-при сохранении значения 4-просто шкалой)
+    '         TFT_Set_Pen(CL_yellow, 1)    ' выбрать цвет и толщину линии
+    '         TFT_V_Line(21, 122, RX_friquency-761)       'вертикальная линия
+    '         delay_ms(300)
+    '         TFT_Set_Pen(CL_red, 1)    ' выбрать цвет и толщину линии
+    '         TFT_V_Line(25, 122, RX_friquency-761)       'вертикальная линия
+             Switcher_save_freq(0) 'отрисовать переключатель setting  ON- status = 1  OFF- status = 0
+             goto RX_tune_cycle
+        end if
+        encod_old = encod
+
+      wend
+
+'+++++ раздел переключения RX- TX ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+RX_TX_switcher_cycle:
+   Switcher_RX_TX_1() ' отрисовать статус Switcher_RX_TX_1 сверху
+   delay_ms(200)
+  RX_TX_switcher__cycle_0:
+  ' Switcher_RX_TX(RX_TX_status) 'отрисовать переключатель RX/TX  ON- TX_status = 1  OFF- TX_status = 0
+    encoder_cycle ()  ' настройка энкодера для входа в цикл
+    while TRUE
+         if time_count_1 > 3000 then
+           goto RX_volume_cycle
+           else
+           inc(time_count_1) ' таймер нахождения в режиме настройки частоты
+         end if
+
+        but_count = button_()
+        check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+
+        if but_count > 0 then
+          but_count = 0
+          goto Setting_switcher
+        end if
+
+        but_count = 0
+
+        encod = encoder()     'прочитали значение энкодера (100)
+
+        if encod <> encod_old then
+          if encod > encod_old then
+             if RX_TX_status = 0 then
+               RX_TX_status = 1 ' RX=0 TX=1
+               Switcher_RX_TX(RX_TX_status) 'отрисовать переключатель RX/TX  ON- TX_status = 1  OFF- TX_status = 0
+                 Antenna_RX_Write (10, 10, CL_red)  ' рисунок антенны. контур белый, x, y, цвет внутренней точки ,
+             end if
+               else
+             if RX_TX_status = 1 then
+               RX_TX_status = 0 ' RX=0 TX=1
+               Switcher_RX_TX(RX_TX_status) 'отрисовать переключатель RX/TX  ON- TX_status = 1  OFF- TX_status = 0
+                  Antenna_RX_Write (10, 10, CL_green)  ' рисунок антенны. контур белый, x, y, цвет внутренней точки ,
+           end if
+        end if
+      end if
+      encod_old = encod
+    wend
+
+'+++++ раздел переключателя вход в SETTING ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Setting_switcher:
+   Setting_1()
+   delay_ms(200)
+Setting_switcher_0:
+    encoder_cycle ()  ' настройка энкодера для входа в цикл
+Setting_switcher_cycle:
+    while TRUE
+       if time_count_1 > 3000 then
+         goto RX_volume_cycle
+         else
+         inc(time_count_1) ' таймер нахождения в режиме настройки частоты
+       end if
+
+      but_count = button_()
+      check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+
+      if but_count > 0 then
+        but_count = 0
+        goto RX_volume_cycle
+      end if
+
+      but_count = 0
+
+      encod = encoder()     'прочитали значение энкодера (100)
+
+      if encod > encod_old then
+           Switcher_setting(1) 'отрисовать переключатель setting  ON- status = 1  OFF- status = 0
+           delay_ms(300)
+           Switcher_setting(0) 'отрисовать переключатель setting  ON- status = 1  OFF- status = 0
+      end if
+      encod_old = encod
+
+    wend
+
+
+
+
+
+'
+''+++++ меню  SETTING ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+'Setting:   '
+'  TFT_BLED = 0                    ' подсветка дисплея
+'  TFT_Fill_Screen(CL_black)
+'  TFT_Set_Pen(CL_silver, 1)    ' выбрать цвет и толщину линии
+'  TFT_H_Line(0, 320, 20)       'горизонтальная линия
+'  TFT_H_Line(0, 320, 220)       'горизонтальная линия
+'
+'  i = 1
+'  while i < 13
+'  Setting_common_1 [i] = i+16
+'  inc(i)
+'  wend
+'
+'  i = 1
+'  while i < 13
+'   Byte_Write(i, @Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL, 4, i*15+16 ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+'   inc(i)
+'  wend
+'
+'  i = 1
+'  while i < 13
+'   Byte_Write(Setting_common_1 [i], @Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL, 260, i*15+16 ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+'   inc(i)
+'  wend
+'
+' ' TFT_Set_Pen(CL_silver, 1)    ' выбрать цвет и толщину линии
+'  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+'
+'  Setting_Commom:
+'  Setting_Common_List_0:
+'  i = 1
+'  while i < 16
+'   Setting_Common_list_1(i) ' отрисовать список пунктов меню настроек  i - номер из списка
+'   inc(i)
+' wend
+'
+'  TFT_BLED = 1                    ' подсветка дисплея
+'
+'Setting_Common_List_1:
+'     tmp_byte_1 = 1
+'
+'Setting_Common_List_2:
+'     encoder_cycle ()  ' настройка энкодера для входа в цикл
+'     var_cycle_1 = tmp_byte_1   ' присвоили текущее значение переменной энкодера
+'     var_cycle_2 = var_cycle_1  ' уровняли значения прошлое и текущее
+'     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+'     Setting_Common_list_1(var_cycle_1) ' отрисовали желтым текущий пункт списка
+'                            ' ушли ждать нажатие на кнопку
+'
+'    while TRUE
+'      but_count = button_()
+'      check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+'
+'      if but_count > 0 then
+'        tmp_byte_1 = var_cycle_1
+'        goto Change_setting
+'      end if
+'
+'      encod = encoder() ' проверить не поворачивался ли энкодер
+'
+'      if  encod > encod_old then
+'       var_cycle_2 = var_cycle_1
+'       var_cycle_1 = check_over_plus(var_cycle_1, 15)
+'        TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+'        Setting_Common_list_1(var_cycle_2) ' отрисовать список пунктов меню настроек  i - номер из списка
+'        TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+'      if encod < encod_old then
+'       var_cycle_2 = var_cycle_1
+'       var_cycle_1 = check_over_minus(var_cycle_1, 1)
+'        TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+'        Setting_Common_list_1(var_cycle_2) ' отрисовать список пунктов меню настроек  i - номер из списка
+'        TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL)
+'        Setting_Common_list_1(var_cycle_1) ' отрисовать список пунктов меню настроек  i - номер из списка
+'      end if
+'    encod_old = encod
+'  wend
+'
+'Change_setting:
+'     encoder_cycle ()  ' настройка энкодера для входа в цикл
+'     var_cycle_1 = Setting_common_1 [tmp_byte_1]
+'     Byte_Write(var_cycle_1, @Digital_7_Italic7x14_Regular, CL_yellow, FO_HORIZONTAL, 260, tmp_byte_1*15+16 ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+'
+'  while TRUE
+'      but_count = button_()
+'      check_button_for_stand_by() ' проверить не зажата ли кнопка для выхода в режим standby
+'
+'      if but_count > 0 then
+'        Byte_Write(var_cycle_1, @Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL, 260, tmp_byte_1*15+16 ) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+'        goto Setting_Common_List_2
+'      end if
+'
+'      encod = encoder() ' проверить не поворачивался ли энкодер
+'
+'      if  encod > encod_old then
+'       var_cycle_2 = var_cycle_1
+'       var_cycle_1 = check_over_plus(var_cycle_1, 50)
+'        Byte_Re_Write(var_cycle_2, var_cycle_1, @Digital_7_Italic7x14_Regular, CL_black, CL_yellow, FO_HORIZONTAL, 260, tmp_byte_1*15+16 ) '(цифра старая, цифра новая, шрифт, цвет фона, цвет шрифта, вертик/гориз, x, y)
+'      end if
+'      if encod < encod_old then
+'       var_cycle_2 = var_cycle_1
+'       var_cycle_1 = check_over_minus(var_cycle_1, 1)
+'        Byte_Re_Write(var_cycle_2, var_cycle_1, @Digital_7_Italic7x14_Regular, CL_black, CL_yellow, FO_HORIZONTAL, 260, tmp_byte_1*15+16 ) '(цифра старая, цифра новая, шрифт, цвет фона, цвет шрифта, вертик/гориз, x, y)
+'      end if
+'    encod_old = encod
+'  wend
+'
+'
+'  temp_1:
+'
+'  goto temp_1
+'
+
+
+
+end.
+
+
+
+
+
+
+
+
+
+
+
+'
+'' en:
+'goto en
+''
+'  'проверить энкодер
+'
+'  encoder_init()
+' '    if encod < encod_old then
+'  switcher_status = RX_TX_status
+'      if switcher_status = 0 then
+''          encod = 1
+'         encod_old = 2
+'         switcher_status = 1
+'         else
+'         encod = 2
+'         encod_old = 1
+'         switcher_status = 0
+'      end if
+''
+''     Switcher_Drow (10,200, CL_black, CL_red, CL_green, 0) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+''
+'     'отрисовать переключатель входа в настройки
+'     'encod_old = encod_old + 16
+'  '   Switcher_Drow (257,200, CL_black, CL_red, CL_green, 1) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+'     TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_silver, FO_HORIZONTAL)
+'     TFT_Write_Text("switch to", 195, 203)
+'     TFT_Write_Text("setting", 205, 216)
+'
+'  encod = encoder()     'прочитали значение энкодера (100)
+'  encod_old = encod
+'  time_count_1 = 0 'обнулить счетчик нахождения в режиме настройки
+''
+''setting_cycle_RX_TX_switch:  ' цикл меню настроек переключение режима RX-TX
+'  if time_count_1 > 3000 then
+''     RX_TX_status = switcher_status
+'    goto RX_volume_cycle
+'    else
+''     inc(time_count_1) ' таймер нахождения в режиме настройки частоты
+''   end if
+''
+'   if but_count > 3 then
+'      RX_TX_status = switcher_status
+'     standby_mode()
+'     'stop_mode()
+'  end if
+'  if button_() = 1 then
+'     inc(but_count)
+'     time_count_1 = 0 'обнулить счетчик нахождения в режиме настройки
+'     RX_TX_status = switcher_status
+'     goto RX_volume_cycle ' setting_cycle_setting_switch
+'  end if
+'  but_count = 0
+'
+'  encod = encoder()     'прочитали значение энкодера
+'
+' ' Switcher_Drow (10,200, CL_black, CL_red, CL_green, 0) 'x, y, цвет движка переключателя, цвет вкл, цвет выкл, отрисовка статуса включено
+'  'RX_TX_status = switcher_status
+'   if switcher_status = 1 then
+'     TFT_Write_Text("TX", 15, 209)
+'     else
+'     TFT_Write_Text("RX", 42, 209)
+'   end if
+'  encod_old = encod
+'    if first_on = 0 then
+'      goto draw4
+'    end if
+'goto setting_cycle_RX_TX_switch
+'
+'setting_cycle_setting_switch:
+
+
+
+
+
+
+
+
+'
+'
+
+
+
+'
+'scr_main:
+'
+'
+'  TFT_Set_Pen(CL_green, 1)    ' выбрать цвет и толщину линии
+'  for i = 0 to 250
+'  TFT_V_Line(25, 119, i)       'вертикальная линия
+'  next i
+'  for i = 0 to 70
+'  TFT_V_Line(25, 119, i+250)       'вертикальная линия
+'  next i
+'  TFT_Set_Pen(CL_yellow, 1)    ' выбрать цвет и толщину линии
+'  for i = 0 to 250
+'  TFT_V_Line(86, 119, i)       'вертикальная линия
+'  next i
+'
+'  TFT_Set_Pen(CL_red, 1)    ' выбрать цвет и толщину линии
+'  TFT_V_Line(22, 122, 100)       'вертикальная линия
+'
+'
+'
+'
+'
+'
+'scr_footer:
+'  TFT_Set_Pen(CL_silver, 1)    ' выбрать цвет и толщину линии
+'  TFT_Rectangle_Round_Edges(3,150, 317, 237, 5)
+'
+'
+'
+'
+'
+'  pause_:
+'  battary_check()
+'
+'  '
+'
+''   TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_white, FO_HORIZONTAL)
+''   WordToStr(adc_value, txt)
+''   TFT_Write_Text(txt, 130, 30)
+''   delay_ms(1000)
+''   TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_black, FO_HORIZONTAL)
+''   WordToStr(adc_value, txt)
+''   TFT_Write_Text(txt, 130, 30)
+'
+'  Float_text = Float_to_Text(ADC_result, 2)   'ADC_result
+'  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_white, FO_HORIZONTAL)
+'  TFT_Write_Text(Float_text, 245, 4)
+'
+'  for i = 0 to 250
+'  if button_() = 2 then
+'    'delay_ms(200)
+'    standby_mode()
+'    'stop_mode()
+'  end if
+'  next i
+'
+''  delay_ms(1000)
+'  TFT_Set_Font(@Digital_7_Italic7x14_Regular, CL_black, FO_HORIZONTAL)
+'  TFT_Write_Text(Float_text, 245, 4)
+'
+' goto pause_
+'
+'
+'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+'
+'
+'
+' if button_() < 2 then
+'    standby_mode()
+' end if
+'TFT_Activate()     ' включение дисплея
+'
+'
+'
+''TFT_Fill_Screen(CL_green)
+'
+''Word_Write (SWS0_bit, @TFT_defaultFont,CL_red, FO_HORIZONTAL, 158, 50) '(цифра, шрифт, цвет, вертик/гориз, x, y)
+'
+'
+'
+'
+'
+'init_encoder()
+'set_encoder(100, 50)
+'encod_old = encod
+'
+' enk:
+'  if button_() = 2 then
+'    TFT_Fill_Screen(CL_white)
+'    delay_ms(200)
+'    standby_mode()
+'    'stop_mode()
+'    Word_Re_Write (encod_old, encod, @TFT_defaultFont, CL_white, CL_black, FO_HORIZONTAL, 130, 30) '(цифра старая, цифра новая, шрифт, цвет фона, цвет шрифта, вертик/гориз, x, y)
+'  end if
+'
+'
+'
+'  encod = encoder()
+'  if  encod_old = encod then
+'   goto enk
+'   else
+'   Word_Re_Write (encod_old, encod, @TFT_defaultFont, CL_white, CL_black, FO_HORIZONTAL, 130, 30) '(цифра старая, цифра новая, шрифт, цвет фона, цвет шрифта, вертик/гориз, x, y)
+'  encod_old = encod
+'  goto enk
+' end if
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'' рабочая программа радио (прием,передача)
+'Radio:
+'SI_L_in = 0
+'SI_R_in = 0
+'' начало программы радио
+'delay_ms(100)
+''TFT_Init_LS022_8bit(320, 240)   ' инициализация дисплея
+'TFT_Fill_Screen(CL_Black)
+'TFT_Set_Index_Ptr(0x28)'       // Выключение дисплея
+'TFT_Set_Index_Ptr(0x29)'       // Включение дисплея
+''TFT_BLED = 1                    ' подсветка дисплея
+''TFT_Set_Index_Ptr(0x10) ' sleep IN
+'
+'
+'si4721_main:
+'
+' Num = 0
+' TFT_Fill_Screen(CL_white)
+'
+'
+'
+'POWER_UP_1:
+' screen()     'отрисовать значение переменных
+'
+' SI_RF_power = 1    'выкл
+' SI_Headphone = 1
+' Si_SPI_init() 'инициализация портов
+' 'SI_Headphone = 0   'вкл
+'
+' 'SI_power = 1
+''SI_Pins()
+'
+'
+'
+''set12:
+''goto set12
+'
+' message = "Power_up"
+' 'POWER_UP_RX()   'приемник
+' POWER_UP()'передатчик
+' Write_()
+'          delay_ms(2000)
+'
+'
+'
+'  message = "Get_rev"
+'  GET_REV()
+'  Write_()
+'          delay_ms(2000)
+'
+'
+'  goto TX
+'
+' ' приемник
+'
+'
+' set1:
+'  message = "volume"
+'  ARG5 = 10'   max=63 (0x3F)
+'  Write_()
+'  RX_VOLUME() ' настройка громкости
+'     delay_ms(2000)
+'
+''          delay_ms(2000)
+''   message = "REFCLK_PRESCALE"
+''   REFCLK_PRESCALE()
+''   Write_()
+''          delay_ms(2000)
+''
+'
+'
+'
+'
+'   message = "FM_ANTENNA_INPUT"
+'   FM_ANTENNA_INPUT()
+'   Write_()
+'          delay_ms(2000)
+'
+'FM_BLEND_STEREO_THRESHOLD()
+'FM_BLEND_MONO_THRESHOLD()
+'
+'FM_BLEND_RSSI_STEREO_THRESHOLD()
+'FM_BLEND_RSSI_MONO_THRESHOLD()
+'FM_BLEND_SNR_STEREO_THRESHOLD()
+'FM_BLEND_SNR_MONO_THRESHOLD()
+'FM_BLEND_MULTIPATH_STEREO_THRESHOLD()
+'
+'   message = "FM_TUNE"
+'   ARG2 = 0x25 '   0x26'
+'   ARG3 = 0x94  '  0xDE'
+'   FM_TUNE_FREQ()
+'   ARG5 = 35'   max=63 (0x3F)  25
+'   RX_VOLUME() ' настройка громкости
+'   Write_()
+'          delay_ms(2000)
+'
+'
+'
+'
+'
+'
+'
+'
+'   message = "GET_INT_STATUS"
+'   GET_INT_STATUS()
+'   Write_()
+'          delay_ms(1000)
+'
+'          TFT_BLED = 0                    ' подсветка дисплея
+' '         SI_Vio = 1
+'          'SI_SEN = 0
+'          SI_GPIO1 = 0
+'          SI_GPIO2 = 0
+'
+''TFT_Set_Index_Ptr(0x11) ' sleep
+'
+'set11:
+'
+'          SI_Headphone = 0    ' включить УМ для наушников
+''
+''          delay_ms(1000)
+''          TFT_BLED = 0                    ' подсветка дисплея
+''          delay_ms(2000)
+'          TFT_BLED = 1                    ' подсветка дисплея
+''          delay_ms(2000)
+''
+'''          SI_Headphone = 1
+'''
+'''          delay_ms(3000)
+'goto set11
+'
+'  volume:
+'  for ARG5 = 30 to 50'   max=63 (0x3F)
+'  RX_VOLUME() ' настройка громкости
+'  delay_ms(100)
+'  next ARG5
+'  delay_ms(3000)
+'  ARG5 = 10
+'
+' ' goto volume
+'
+'
+'   stop_:
+'   GET_INT_STATUS()
+'      message = "INT_STATUS"
+'      Write_()
+'      delay_ms(1000)
+'    message = "FM_STATUS"
+'   FM_TUNE_STATUS()
+'        Write_()
+'  delay_ms(3000)
+'
+'  'SET_PROPERTY()
+'
+'   ARG2 = 0x25
+'   ARG3 = 0x94
+'   FM_TUNE_FREQ()
+'        message = "RSQ_STATUS"
+'   FM_RSQ_STATUS()
+'
+'
+'   Write_()
+'  delay_ms(3000)
+'goto stop_
+'
+'
+'
+'
+'  Write_()
+'  goto stop_
+'
+'
+'  TX:
+'  'передача
+'
+'  message = "Power TX"
+'  ARG2 = 0x00'
+'  ARG3 = 0x73' 115dB uV
+'  TX_TUNE_POWER()
+'        Write_()
+'      delay_ms(2000)
+' ' SET_PROPERTY()
+'
+'  message = "RX-96.20"
+'  ARG2 = 0x25
+'  ARG3 = 0x94'94
+'  TX_TUNE_FREQ()
+'        Write_()
+'      delay_ms(2000)
+'  message = "INT_STATUS"
+'  GET_INT_STATUS()
+'      Write_()
+'      delay_ms(2000)
+'
+'    message = "Power TX"
+'  ARG2 = 0x00'
+'  ARG3 = 0x73' 115dB uV
+'  TX_TUNE_POWER()
+'        Write_()
+'      delay_ms(2000)
+'
+'  message = "TX_STATUS"
+'  TX_TUNE_STATUS()
+'      Write_()
+'      delay_ms(2000)
+'
+' TX1:
+' for i=1 to 200
+' SI_R_in = 1
+' delay_ms(1)
+' SI_R_in = 0
+' delay_ms(1)
+' next i
+' for i=1 to 200
+' SI_L_in = 1
+' delay_ms(1)
+' SI_L_in = 0
+' delay_ms(1)
+' next i
+' goto TX1
+'
+'  message = "Power_down"
+'  POWER_DOWN()
+'  Write_()
+'  delay_ms(5000)
+'  goto POWER_UP_1
+'
+'
+'  TX_stop:
+'  ARG2 = 0x00'
+'  ARG3 = 0x73' 115dB uV
+'  TX_TUNE_POWER()
+'      delay_ms(50)
+'  ARG2 = 0x00'
+'  ARG3 = 0x00' 115dB uV
+'  TX_TUNE_POWER()
+'      delay_ms(50)
+'  goto TX_stop
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'  message = "Power_down"
+'  POWER_DOWN()
+'  Write_()
+'  delay_ms(500)
+'   goto POWER_UP_1
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'TFT_Set_Index_Ptr(0x28)'       // Выключение дисплея
+'TFT_BLED = 0                    ' подсветка дисплея
+'TFT_Set_Index_Ptr(0x10)    ' sleep
+'
+'delay_ms(500)
+'ADC_Set_Input_Channel(_ADC_CHANNEL_0) ' Set ADC channel 10 as an analog input
+'ADC1_Init()                            ' Initialize ADC module
+'TFT_BLED = 1                    ' подсветка дисплея
+'TFT_Set_Index_Ptr(0x29)'       // Включение дисплея
+'TFT_Set_Index_Ptr(0x11)    ' sleep
+'delay_ms(100)
+'
+'test2:
+'TFT_BLED = 0                    ' подсветка дисплея
+''TFT_Set_Index_Ptr(0x28)'       // Выключение дисплея
+'TFT_Set_Index_Ptr(0x10)    ' sleep
+'delay_ms(1)
+'
+'
+'adc_value = ADC1_Get_Sample(0)    ' read analog value from ADC module channel 10
+'
+'
+''TFT_Set_Index_Ptr(0x29)'       // Включение дисплея
+'TFT_Set_Index_Ptr(0x11)    ' sleep
+'TFT_BLED = 1                    ' подсветка дисплея
+'WordToStr(adc_value, txt)
+'TFT_Write_Text(txt, 130, 30)
+'
+'ADC_result = adc_value * 0.000799 * 2.059
+'Float_text = Float_to_Text(ADC_result,3)
+'TFT_Write_Text(Float_text, 130, 50)
+'
+'ADC_result_1 = ADC_result - temp
+'Floattostr(ADC_result_1, txt)
+'TFT_Write_Text(txt, 130, 70)
+'
+'temp = ADC_result
+'
+'delay_ms(2000)
+'TFT_Fill_Screen(CL_white)
+'goto test2
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+'
+' EEPROM_24LC512_Init()
+' EEPROM_24LC512_WrSingle(25, 100)  ' по адресу (wAddr) - адрес = word, запись бита (wData)
+' 'EEPROM_24LC512_Init()
+' 'EEPROM_24LC512_WrSingle(25, 105)  ' по адресу (wAddr) - адрес = word, запись бита (wData)
+'
+' TFT_Fill_Screen(CL_gray)
+' TFT_Set_Pen(CL_red, 1)
+' TFT_Set_Brush(1,CL_silver,0,0,0,0)
+' TFT_Rectangle_Round_Edges(20, 20, 219, 107, 12)
+'
+' delay_ms(2000)
+'
+' adc_value = EEPROM_24LC512_RdSingle(26)              ' чтение бита по адресу (wAddr) - адрес = word
+' WordToStr(adc_value, txt)
+' TFT_Write_Text(txt, 130, 30)
+'
+' T_1:
+' goto T_1
